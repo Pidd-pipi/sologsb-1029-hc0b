@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { courseForLesson, exportRecords, lessonById, persist, saveAttempt, setDownloaded, state, updateTokenClassification } from './store';
+import { courseForLesson, exportRecords, lessonById, persist, saveAttempt, setDownloaded, state, updateTokenClassification, upsertCustomLesson } from './store';
+import { normalizeSentenceKey, parseLessonInput } from './courseImport';
 import type { ErrorCategory, Lesson, PracticeAttempt, PracticeView } from './types';
 import { compareSentence, scoreAttempt, segmentText } from './utils';
 
@@ -13,6 +14,9 @@ const segmentStart = ref(0);
 const segmentEnd = ref(1);
 const teacherAttemptId = ref(state.attempts[0]?.id ?? '');
 const teacherDraft = ref(state.attempts[0]?.teacherFeedback ?? '');
+const builderCourseTitle = ref('');
+const builderLessonTitle = ref('');
+const builderSource = ref('');
 let toastTimer = 0;
 
 const activeLesson = computed(() => lessonById(state.activeLessonId));
@@ -38,6 +42,34 @@ const resultSentence = computed(() => resultAttempt.value?.sentenceAttempts[sele
 const teacherAttempt = computed(() => state.attempts.find((attempt) => attempt.id === teacherAttemptId.value));
 const totalWords = computed(() => state.attempts.flatMap((attempt) => attempt.sentenceAttempts).flatMap((item) => item.tokens).length);
 const correctedWords = computed(() => state.attempts.flatMap((attempt) => attempt.sentenceAttempts).flatMap((item) => item.tokens).filter((token) => !token.correct && token.category !== 'unclassified').length);
+
+const builderParsed = computed(() => parseLessonInput(builderSource.value));
+const builderOkRows = computed(() => builderParsed.value.filter((line) => line.status === 'ok'));
+const builderProblems = computed(() => builderParsed.value.filter((line) => line.status === 'empty-english' || line.status === 'bad-format'));
+const builderDuplicates = computed(() => builderParsed.value.filter((line) => line.status === 'duplicate'));
+const builderExistingLesson = computed(() => {
+  const courseTitle = builderCourseTitle.value.trim();
+  const lessonTitle = builderLessonTitle.value.trim();
+  if (!courseTitle || !lessonTitle) return undefined;
+  return state.courses
+    .find((course) => course.custom && course.title === courseTitle)
+    ?.lessons.find((lesson) => lesson.title === lessonTitle);
+});
+const builderDiff = computed(() => {
+  const lesson = builderExistingLesson.value;
+  if (!lesson) return undefined;
+  const existingKeys = new Set(lesson.sentences.map((sentence) => normalizeSentenceKey(sentence.text)));
+  const incomingKeys = new Set(builderOkRows.value.map((line) => normalizeSentenceKey(line.text)));
+  const kept = builderOkRows.value.filter((line) => existingKeys.has(normalizeSentenceKey(line.text))).length;
+  return {
+    kept,
+    added: builderOkRows.value.length - kept,
+    removed: lesson.sentences.filter((sentence) => !incomingKeys.has(normalizeSentenceKey(sentence.text))).length
+  };
+});
+const customLessons = computed(() => state.courses
+  .filter((course) => course.custom)
+  .flatMap((course) => course.lessons.map((lesson) => ({ course, lesson }))));
 
 const categoryOptions: Array<{ value: ErrorCategory; label: string }> = [
   { value: 'unclassified', label: '未分类' },
@@ -188,6 +220,34 @@ function saveTeacherFeedback() {
   attempt.teacherFeedback = teacherDraft.value.trim();
   persist();
   notify('教师反馈已保存');
+}
+
+function confirmImport() {
+  if (!builderCourseTitle.value.trim() || !builderLessonTitle.value.trim()) {
+    notify('请先填写课程名和课节名');
+    return;
+  }
+  const rows = builderOkRows.value.map((line) => ({ text: line.text, translation: line.translation, note: line.note }));
+  if (!rows.length) {
+    notify('没有可导入的句子，请先修正问题行');
+    return;
+  }
+  const result = upsertCustomLesson(builderCourseTitle.value, builderLessonTitle.value, rows);
+  persist();
+  notify(result.isNewLesson
+    ? `已创建课节，导入 ${result.added} 句，学生端可下载练习`
+    : `课节已更新：保留 ${result.kept} 句，新增 ${result.added} 句，移除 ${result.removed} 句`);
+}
+
+function editCustomLesson(courseId: string, lessonId: string) {
+  const course = state.courses.find((item) => item.id === courseId);
+  const lesson = course?.lessons.find((item) => item.id === lessonId);
+  if (!course || !lesson) return;
+  builderCourseTitle.value = course.title;
+  builderLessonTitle.value = lesson.title;
+  builderSource.value = lesson.sentences.map((sentence) => `${sentence.text}|${sentence.translation}|${sentence.note}`).join('\n');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  notify('已载入课节，可修改后重新保存');
 }
 
 function toggleTheme() {
@@ -398,8 +458,57 @@ onBeforeUnmount(() => {
       <div v-else-if="view === 'teacher'" class="page">
         <header class="topbar">
           <button class="back-button" aria-label="返回课程库" @click="view = 'library'">‹</button>
-          <div class="brand"><div class="brand-mark">T</div><div><h1>教师复核</h1><p>查看作答并写入反馈</p></div></div>
+          <div class="brand"><div class="brand-mark">T</div><div><h1>教师工作台</h1><p>自编教材建课 · 作答反馈</p></div></div>
         </header>
+
+        <section class="panel">
+          <div class="dictation-label"><strong>自建教材建课</strong><span>每行：英文|翻译|提示</span></div>
+          <div class="builder-form">
+            <input v-model="builderCourseTitle" placeholder="课程名，如：高一英语 · 必修一（同名自建课程会合并）" aria-label="课程名" />
+            <input v-model="builderLessonTitle" placeholder="课节名，如：Unit 1 课文（同课程同名课节会覆盖更新）" aria-label="课节名" />
+            <textarea v-model="builderSource" aria-label="教材文本，每行一句" placeholder="每行一句，格式：英文|翻译|提示&#10;I would like a window seat.|我想要靠窗的座位。|window 重音在前&#10;Could you say that again?|您能再说一遍吗？|again 可弱读"></textarea>
+          </div>
+
+          <template v-if="builderSource.trim()">
+            <div class="preview-stats">
+              <div class="preview-stat"><strong>{{ builderOkRows.length }}</strong><span>可导入句子</span></div>
+              <div class="preview-stat"><strong>{{ builderProblems.length }}</strong><span>问题行</span></div>
+              <div class="preview-stat"><strong>{{ builderDuplicates.length }}</strong><span>重复行</span></div>
+            </div>
+
+            <div v-if="builderDiff" class="feedback-card">
+              <strong>已存在同课节，本次保存将：</strong>
+              <p>保留 {{ builderDiff.kept }} 句（学生已填答案跟随原句，不受换位影响）· 新增 {{ builderDiff.added }} 句 · 移除 {{ builderDiff.removed }} 句。翻译和提示按新内容更新。</p>
+            </div>
+
+            <div v-if="builderProblems.length" class="issue-block">
+              <strong>以下行不会导入，请修正</strong>
+              <div v-for="line in builderProblems" :key="`problem-${line.lineNumber}`" class="issue-row">
+                <span class="issue-badge">{{ line.status === 'empty-english' ? '空英文' : '格式错误' }}</span>
+                <span>第 {{ line.lineNumber }} 行：{{ line.raw }}</span>
+              </div>
+            </div>
+
+            <div v-if="builderDuplicates.length" class="issue-block">
+              <strong>重复句已忽略（同课节相同英文只保留第一条）</strong>
+              <div v-for="line in builderDuplicates" :key="`duplicate-${line.lineNumber}`" class="issue-row">
+                <span class="issue-badge dup">重复</span>
+                <span>第 {{ line.lineNumber }} 行与第 {{ line.duplicateOfLine }} 行相同：{{ line.text }}</span>
+              </div>
+            </div>
+
+            <var-button block type="primary" style="margin-top: 12px" :disabled="!builderOkRows.length" @click="confirmImport">确认导入 {{ builderOkRows.length }} 句</var-button>
+          </template>
+          <p v-else class="builder-hint">粘贴教材后先核对可导入数量与问题行，确认无误再导入；保存后学生端立即可下载练习，之后可再次编辑同一课节。</p>
+        </section>
+
+        <section v-if="customLessons.length" class="panel">
+          <div class="dictation-label"><strong>我的课节</strong><span>{{ customLessons.length }} 个 · 可重新编辑</span></div>
+          <div v-for="item in customLessons" :key="item.lesson.id" class="lesson-row">
+            <div><h4>{{ item.lesson.title }}</h4><p>{{ item.course.title }} · {{ item.lesson.sentences.length }} 句 · 约 {{ item.lesson.estimatedMinutes }} 分钟</p></div>
+            <var-button type="primary" variant="outline" size="small" @click="editCustomLesson(item.course.id, item.lesson.id)">编辑</var-button>
+          </div>
+        </section>
 
         <div v-if="state.attempts.length" class="panel">
           <div class="dictation-label"><strong>选择一次作答</strong><span>{{ state.attempts.length }} 条</span></div>

@@ -26,6 +26,8 @@ export interface Course {
   description: string;
   level: string;
   accent: string;
+  /** 教师自建课程标记；示例课程无此字段，不允许在教师页编辑。 */
+  custom?: boolean;
   lessons: Lesson[];
 }
 
