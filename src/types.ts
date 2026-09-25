@@ -80,3 +80,25 @@ export interface TextSegment {
   display: string;
   normalized: string;
 }
+
+export type ParseIssueKind = 'empty-english' | 'bad-format' | 'duplicate';
+
+export interface ParsedSentence {
+  line: number;
+  english: string;
+  translation: string;
+  note: string;
+}
+
+export interface ParseIssue {
+  line: number;
+  kind: ParseIssueKind;
+  message: string;
+  raw: string;
+}
+
+export interface LessonParseResult {
+  sentences: ParsedSentence[];
+  issues: ParseIssue[];
+  totalLines: number;
+}

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { courseForLesson, exportRecords, lessonById, persist, saveAttempt, setDownloaded, state, updateTokenClassification } from './store';
-import type { ErrorCategory, Lesson, PracticeAttempt, PracticeView } from './types';
+import { parseLessonInput } from './courseBuilder';
+import { courseForLesson, exportRecords, lessonById, persist, saveAttempt, saveBuiltLesson, setDownloaded, state, updateTokenClassification } from './store';
+import type { ErrorCategory, Lesson, LessonParseResult, ParseIssueKind, PracticeAttempt, PracticeView } from './types';
 import { compareSentence, scoreAttempt, segmentText } from './utils';
 
 const view = ref<PracticeView>(state.activeLessonId ? 'practice' : 'library');
@@ -13,6 +14,11 @@ const segmentStart = ref(0);
 const segmentEnd = ref(1);
 const teacherAttemptId = ref(state.attempts[0]?.id ?? '');
 const teacherDraft = ref(state.attempts[0]?.teacherFeedback ?? '');
+const builderLessonId = ref('');
+const builderCourseTitle = ref('');
+const builderLessonTitle = ref('');
+const builderRaw = ref('');
+const builderPreview = ref<LessonParseResult | null>(null);
 let toastTimer = 0;
 
 const activeLesson = computed(() => lessonById(state.activeLessonId));
@@ -36,6 +42,14 @@ const lessonCompletion = computed(() => {
 const resultAttempt = computed(() => state.attempts.find((attempt) => attempt.id === resultAttemptId.value));
 const resultSentence = computed(() => resultAttempt.value?.sentenceAttempts[selectedResultSentence.value]);
 const teacherAttempt = computed(() => state.attempts.find((attempt) => attempt.id === teacherAttemptId.value));
+const builderIssueGroups = computed(() => {
+  const preview = builderPreview.value;
+  if (!preview) return [];
+  const labels: Record<ParseIssueKind, string> = { 'bad-format': '格式错误', 'empty-english': '空英文', duplicate: '重复句' };
+  return (Object.entries(labels) as Array<[ParseIssueKind, string]>)
+    .map(([kind, label]) => ({ kind, label, items: preview.issues.filter((issue) => issue.kind === kind) }))
+    .filter((group) => group.items.length);
+});
 const totalWords = computed(() => state.attempts.flatMap((attempt) => attempt.sentenceAttempts).flatMap((item) => item.tokens).length);
 const correctedWords = computed(() => state.attempts.flatMap((attempt) => attempt.sentenceAttempts).flatMap((item) => item.tokens).filter((token) => !token.correct && token.category !== 'unclassified').length);
 
@@ -78,6 +92,26 @@ watch(activeLesson, (lesson) => {
 
 watch(teacherAttemptId, (id) => {
   teacherDraft.value = state.attempts.find((attempt) => attempt.id === id)?.teacherFeedback ?? '';
+});
+
+watch(builderLessonId, (lessonId) => {
+  if (!lessonId) {
+    builderCourseTitle.value = '';
+    builderLessonTitle.value = '';
+    builderRaw.value = '';
+  } else {
+    const lesson = lessonById(lessonId);
+    if (!lesson) return;
+    builderCourseTitle.value = courseForLesson(lessonId)?.title ?? '';
+    builderLessonTitle.value = lesson.title;
+    builderRaw.value = lesson.sentences.map((sentence) => `${sentence.text}|${sentence.translation}|${sentence.note}`).join('\n');
+  }
+  builderPreview.value = null;
+});
+
+// 内容一旦改动，旧预览即失效，确认前必须重新预览。
+watch(builderRaw, () => {
+  builderPreview.value = null;
 });
 
 function notify(message: string) {
@@ -188,6 +222,41 @@ function saveTeacherFeedback() {
   attempt.teacherFeedback = teacherDraft.value.trim();
   persist();
   notify('教师反馈已保存');
+}
+
+function previewBuilder() {
+  if (!builderCourseTitle.value.trim() || !builderLessonTitle.value.trim()) {
+    notify('请先填写课程名和课节名');
+    return;
+  }
+  if (!builderRaw.value.trim()) {
+    notify('请先粘贴课节内容，每行「英文|翻译|提示」');
+    return;
+  }
+  builderPreview.value = parseLessonInput(builderRaw.value);
+  if (!builderPreview.value.sentences.length) notify('没有可导入的句子，请按提示修改');
+}
+
+function confirmBuilder() {
+  const preview = builderPreview.value;
+  if (!preview || !preview.sentences.length) return;
+  const lesson = saveBuiltLesson({
+    lessonId: builderLessonId.value || undefined,
+    courseTitle: builderCourseTitle.value,
+    lessonTitle: builderLessonTitle.value,
+    sentences: preview.sentences.map((sentence) => ({ text: sentence.english, translation: sentence.translation, note: sentence.note }))
+  });
+  if (!lesson) {
+    notify('保存失败，请检查课程名和课节名');
+    return;
+  }
+  builderLessonId.value = lesson.id;
+  persist();
+  notify(`「${lesson.title}」已保存，学生端可下载练习`);
+}
+
+function truncate(text: string, max = 36): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
 function toggleTheme() {
@@ -398,8 +467,40 @@ onBeforeUnmount(() => {
       <div v-else-if="view === 'teacher'" class="page">
         <header class="topbar">
           <button class="back-button" aria-label="返回课程库" @click="view = 'library'">‹</button>
-          <div class="brand"><div class="brand-mark">T</div><div><h1>教师复核</h1><p>查看作答并写入反馈</p></div></div>
+          <div class="brand"><div class="brand-mark">T</div><div><h1>教师复核</h1><p>自建课程并查看作答反馈</p></div></div>
         </header>
+
+        <section class="panel builder-panel">
+          <div class="dictation-label"><strong>自建课程</strong><span>保存后出现在课程库，可下载练习</span></div>
+          <select v-model="builderLessonId" class="builder-input" aria-label="选择要编辑的课节">
+            <option value="">＋ 新建课程</option>
+            <optgroup v-for="course in state.courses" :key="course.id" :label="course.title">
+              <option v-for="lesson in course.lessons" :key="lesson.id" :value="lesson.id">{{ lesson.title }}</option>
+            </optgroup>
+          </select>
+          <input v-model="builderCourseTitle" class="builder-input" placeholder="课程名，如：初三英语 · 期中复习" aria-label="课程名" />
+          <input v-model="builderLessonTitle" class="builder-input" placeholder="课节名，如：Unit 3 对话听写" aria-label="课节名" />
+          <textarea v-model="builderRaw" class="builder-input builder-raw" :placeholder="'每行一条：英文|翻译|提示\n例如：\nWhere is the library?|图书馆在哪里？|Where is 连读。'" aria-label="课节内容"></textarea>
+          <var-button block type="primary" variant="outline" style="margin-top: 10px" @click="previewBuilder">预览导入</var-button>
+
+          <div v-if="builderPreview" class="builder-preview">
+            <div class="builder-summary">
+              <strong>可导入 {{ builderPreview.sentences.length }} 句</strong>
+              <span>共 {{ builderPreview.totalLines }} 行<template v-if="builderPreview.issues.length"> · {{ builderPreview.issues.length }} 行需处理</template></span>
+            </div>
+            <div v-for="group in builderIssueGroups" :key="group.kind" class="issue-group">
+              <strong>{{ group.label }}（{{ group.items.length }}）</strong>
+              <p v-for="item in group.items" :key="item.line">第 {{ item.line }} 行：{{ item.message }}<small v-if="item.raw">{{ truncate(item.raw) }}</small></p>
+            </div>
+            <div v-if="builderPreview.sentences.length" class="builder-sentences">
+              <p v-for="(sentence, index) in builderPreview.sentences" :key="sentence.line">
+                <b>{{ index + 1 }}.</b> {{ sentence.english }}
+                <small>{{ sentence.translation || '（无翻译）' }}<template v-if="sentence.note"> · {{ sentence.note }}</template></small>
+              </p>
+            </div>
+            <var-button block type="primary" style="margin-top: 10px" :disabled="!builderPreview.sentences.length" @click="confirmBuilder">{{ builderLessonId ? '保存修改' : '确认导入' }}</var-button>
+          </div>
+        </section>
 
         <div v-if="state.attempts.length" class="panel">
           <div class="dictation-label"><strong>选择一次作答</strong><span>{{ state.attempts.length }} 条</span></div>

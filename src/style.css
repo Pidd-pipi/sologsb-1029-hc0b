@@ -117,6 +117,20 @@ button, input, textarea { font: inherit; }
 .history-card p { color: var(--muted); font-size: .68rem; margin: 5px 0 0; }
 .teacher-editor { margin-top: 12px; }
 .teacher-editor textarea { width: 100%; min-height: 100px; border: 1px solid var(--line); border-radius: 13px; background: var(--card); color: var(--text); padding: 11px; resize: vertical; }
+.builder-panel .builder-input { width: 100%; border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text); padding: 11px 12px; margin-top: 9px; outline: none; }
+.builder-panel .builder-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 12%, transparent); }
+textarea.builder-raw { min-height: 130px; resize: vertical; line-height: 1.6; }
+.builder-preview { margin-top: 14px; }
+.builder-summary { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 11px 12px; border-radius: 12px; background: var(--soft); font-size: .82rem; }
+.builder-summary span { color: var(--muted); font-size: .68rem; white-space: nowrap; }
+.issue-group { margin-top: 10px; border-left: 4px solid var(--danger); background: var(--soft); padding: 10px 12px; border-radius: 10px; }
+.issue-group strong { font-size: .76rem; color: var(--danger); }
+.issue-group p { margin: 6px 0 0; font-size: .72rem; line-height: 1.5; }
+.issue-group small { display: block; color: var(--muted); word-break: break-all; }
+.builder-sentences { margin-top: 10px; max-height: 190px; overflow-y: auto; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.builder-sentences p { margin: 0 0 8px; font-size: .74rem; line-height: 1.5; }
+.builder-sentences p:last-child { margin-bottom: 0; }
+.builder-sentences small { display: block; color: var(--muted); }
 .segmented { display: flex; padding: 3px; background: var(--line); border-radius: 12px; }
 .segmented button { border: 0; background: transparent; color: var(--muted); border-radius: 9px; padding: 7px 10px; cursor: pointer; font-size: .72rem; }
 .segmented button.active { background: var(--card); color: var(--text); box-shadow: 0 1px 5px rgb(0 0 0 / .09); font-weight: 700; }
